@@ -1,0 +1,53 @@
+# Free-stack result sweep — runs OUTSIDE Base44 on GitHub Actions at 6 AM, 9 AM
+# and 11 AM London time. Fetches full-time scores from free football data APIs,
+# requires two free sources to agree (2 vs 0 Found), and POSTs only the agreed
+# scores to the Base44 ingestResults endpoint as a plain database write — so
+# Base44 sees a standard data insert and burns 0 integration credits.
+#
+# 6 AM and 9 AM: free sources only, no LLM. 11 AM: free sources + LLM.
+#
+# GitHub cron is UTC and ignores DST, so both the GMT (6/9/11 UTC) and BST
+# (5/8/10 UTC) offsets are scheduled; the script checks the real Europe/London
+# hour and exits unless it is 6, 9 or 11, so the right number of runs fire all
+# year.
+#
+# PLACE THIS FILE AT:  .github/workflows/result-sweep.yml
+# (The builder cannot write under .github/workflows/ directly — copy this file
+# there in your repository, or commit it from a fork.)
+name: Result Sweep
+on:
+  schedule:
+    - cron: "0 5 * * *"
+    - cron: "0 6 * * *"
+    - cron: "0 8 * * *"
+    - cron: "0 9 * * *"
+    - cron: "0 10 * * *"
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Sweep mode (6am, 9am, 11am)"
+        required: false
+        default: "11am"
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - run: node external-runner/result-sweep.mjs
+        env:
+          # Webhook URL placeholder — set this in GitHub repository secrets.
+          # Value: https://proud-odds-pattern-pulse.base44.app/functions/ingestResults
+          BASE44_INGEST_URL: ${{ secrets.BASE44_INGEST_URL }}
+          INGEST_RESULTS_TOKEN: ${{ secrets.INGEST_RESULTS_TOKEN }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          FOOTBALL_DATA_KEY: ${{ secrets.FOOTBALL_DATA_KEY }}
+          APIFOOTBALL_KEY: ${{ secrets.APIFOOTBALL_KEY }}
+          SPORTMONKS_KEY: ${{ secrets.SPORTMONKS_KEY }}
+          THESPORTSDB_KEY: ${{ secrets.THESPORTSDB_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          SWEEP_MODE: ${{ github.event.inputs.mode }}
