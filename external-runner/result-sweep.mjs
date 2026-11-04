@@ -1,6 +1,6 @@
 
 
-import fetch from 'node-fetch';
+
 const BASE_URL = process.env.BASE44_INGEST_URL;
 const TOKEN = process.env.INGEST_RESULTS_TOKEN;
 const API_KEY = process.env.API_FOOTBALL_KEY || process.env.APIFOOTBALL_KEY || process.env.API_FOOTBALL;
