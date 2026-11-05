@@ -1,17 +1,182 @@
-const BASE_URL = process.env.BASE44_INGEST_URL;
-const PENDING_URL = process.env.BASE44_PENDING_URL || (BASE_URL ? BASE_URL.replace('ingestResults','getPendingFixtures') + (BASE_URL.includes('?') ? '&' : '?') + 'pin=317120' : '');
-const TOKEN = process.env.INGEST_RESULTS_TOKEN;
-const API_KEY = process.env.API_FOOTBALL_KEY || process.env.APIFOOTBALL_KEY;
-const LLM_KEY = process.env.LLM_API_KEY;
-const LLM_MODEL = process.env.LLM_MODEL || 'gemini-2.0-flash';
-function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
-function getLondonHour() { var now = new Date(); return new Date(now.toLocaleString('en-US', { timeZone: 'Europe/London' })).getHours(); }
-function deriveMode() { var h = getLondonHour(); if (h >= 5 && h < 8) return '6am'; if (h >= 8 && h < 10) return '9am'; return '11am'; }
-function getUSEasternDates(londonDateStr) { var d = new Date(londonDateStr + 'T12:00:00'); var et = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' })); var y = et.getFullYear(); var m = String(et.getMonth()+1).padStart(2,'0'); var day = String(et.getDate()).padStart(2,'0'); var date1 = y + m + day; var et2 = new Date(et); et2.setDate(et2.getDate()+1); var y2 = et2.getFullYear(); var m2 = String(et2.getMonth()+1).padStart(2,'0'); var d2 = String(et2.getDate()).padStart(2,'0'); var date2 = y2 + m2 + d2; return [date1, date2]; }
-function norm(f) { return { id: f.id || f._id, date: f.date || f.fixtureDate || f.match_date || f.matchDate || f.kickoff_date, home: f.home || f.home_team || f.homeTeam, away: f.away || f.away_team || f.awayTeam, attemptCount: f.attemptCount || 0, raw: f }; }
-async function fetchPending() { try { var fetchUrl = PENDING_URL || BASE_URL; console.log('Fetching pending from: ' + fetchUrl); var res = await fetch(fetchUrl, { headers: { Authorization: 'Bearer ' + TOKEN, 'x-pin': '317120' } }); var text = await res.text(); console.log('Raw preview: ' + text.slice(0,300)); var data; try { data = JSON.parse(text); } catch(e) { data = []; } var arr = []; if (Array.isArray(data)) arr = data; else if (data && Array.isArray(data.pending)) arr = data.pending; else if (data && Array.isArray(data.fixtures)) arr = data.fixtures; else if (data && data.matches && Array.isArray(data.matches)) arr = data.matches; var out = []; for (var i=0;i<arr.length;i++) { var n = norm(arr[i]); if (n.id && n.date && n.home) out.push(n); } return out; } catch(e) { console.log('fetchPending error: ' + e.message); return []; } }
-async function queryESPN(fixture) { var leagues = ['eng.1','eng.2','eng.3','eng.4','sco.1','esp.1','esp.spa.copa_del_rey','uefa.champions','uefa.europa','usa.1']; var londonDate = fixture.date || new Date().toISOString().slice(0,10); var dates = getUSEasternDates(londonDate); var usDate1 = dates[0]; var usDate2 = dates[1]; for (var li=0; li<leagues.length; li++) { var league = leagues[li]; for (var di=0; di<2; di++) { var usDate = di==0?usDate1:usDate2; try { var url = 'https://site.api.espn.com/apis/site/v2/sports/soccer/' + league + '/scoreboard?dates=' + usDate; var r = await fetch(url); if (!r.ok) continue; var j = await r.json(); for (var ei=0; ei<j.events.length; ei++) { var ev = j.events[ei]; var name = (ev.name || '').toLowerCase(); if (name.indexOf((fixture.home||'').toLowerCase())>=0 || name.indexOf((fixture.away||'').toLowerCase())>=0) { var comp = ev.competitions[0]; var hs = comp.competitors[0].score; var as = comp.competitors[1].score; if (hs !== undefined) return { score: hs + '-' + as, source: ' espn ' + league + ' ' + usDate }; } } } catch(e){} } } return { score: null, source: ' espn no result ' + usDate1 + ' ' + usDate2 }; }
-async function queryAPIFootball(fixture) { if (!API_KEY) return { score: null, source: 'apiFootball no key' }; var londonDate = fixture.date; try { var url = 'https://v3.football.api-sports.io/fixtures?date=' + londonDate; var r = await fetch(url, { headers: { 'x-apisports-key': API_KEY } }); var j = await r.json(); for (var fi=0; fi<j.response.length; fi++) { var f = j.response[fi]; var home = f.teams.home.name.toLowerCase(); var away = f.teams.away.name.toLowerCase(); if (home.indexOf((fixture.home||'').toLowerCase())>=0 || away.indexOf((fixture.away||'').toLowerCase())>=0) { var hg = f.goals.home; var ag = f.goals.away; if (hg !== null) return { score: hg + '-' + ag, source: 'apiFootball ' + hg + '-' + ag }; } } return { score: null, source: 'apiFootball no result ' + londonDate }; } catch(e){ return { score: null, source: 'apiFootball error ' + e.message }; } }
-async function queryLLM(fixture) { if (!LLM_KEY) return { score: null, source: 'llm no key' }; try { var prompt = 'What was result of ' + fixture.home + ' vs ' + fixture.away + ' on ' + fixture.date + '? Return only score like 2-1'; var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + LLM_MODEL + ':generateContent?key=' + LLM_KEY; var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }); var j = await r.json(); var text = (j.candidates && j.candidates[0].content.parts[0].text) || ''; var m = text.match(/(\d+)\s*-\s*(\d+)/); if (m) return { score: m[1] + '-' + m[2], source: 'llm ' + m[1] + '-' + m[2] }; return { score: null, source: 'llm no result ' + text.slice(0,30) }; } catch(e){ return { score: null, source: 'llm error ' + e.message }; } }
-async function postResult(payload) { try { await fetch(BASE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + TOKEN }, body: JSON.stringify(payload) }); } catch(e){} }
-async function main() { var mode = deriveMode(); console.log('PIN 317120 Mode ' + mode + ' London hour ' + getLondonHour() + ' 10 wait 80 sec MAPPED home_team->home'); var pending = await fetchPending(); console.log('Pending count MAPPED: ' + pending.length + ' isArray: ' + Array.isArray(pending)); if (!Array.isArray(pending)) pending = []; var queue = []; if (mode = '6am') queue = pending.filter(function(f){return f.date}).sort(function(a,b){return new Date(a.date)-new Date(b.date)}).slice(0,33); else if (mode = '9am') queue = pending.filter(function(f){return f.date}).sort(function(a,b){return new Date(a.date)-new Date(b.date)}).slice(33,66); else queue = pending.slice(0,34).concat(pending.filter(function(f){return f.attemptCount>0}).slice(0,20)); console.log('Queue ' + queue.length + ' for ' + mode + ' first: ' + (queue[0] ? queue[0].home + ' vs ' + queue[0].away + ' ' + queue[0].date : 'empty')); var found=0, attempted=0, apiUsed=0; for (var i=0; i<queue.length; i+=10) { var batch = queue.slice(i,i+10); for (var bi=0; bi<batch.length; bi++) { var fixture = batch[bi]; var espn = await queryESPN(fixture); var apiF = await queryAPIFootball(fixture); apiUsed++; var llm = { score: null, source: 'llm skipped not 11am' }; if (mode === '11am') llm = await queryLLM(fixture); var scores = [espn.score, apiF.score, llm.score].filter(function(s){return s}); var counts = {}; for (var si=0; si<scores.length; si++) { var s = scores[si]; counts[s] = (counts[s]||0)+1; } var best = null; var bestCount = 0; for (var k in counts) { if (counts[k] > bestCount) { best = k; bestCount = counts[k]; } } var voteString = espn.source + ' · ' + apiF.source + ' · ' + llm.source; if (best && bestCount >= 2) { await postResult({ id: fixture.id, score: best, sources: voteString, vote: best + ' Found 2 vs 0', lookup_state: 'found', status: 'review', last_search_at: new Date().toISOString(), vote_sources: voteString }); found++; } else { var vote = scores.length ? (scores[0] + ' vs 0 needs 2 vs 0') : '0 vs 0 needs 2 vs 0'; await postResult({ id: fixture.id, score: null, sources: voteString, vote: vote, lookup_state: 'attempted', status: 'pending', last_search_at: new Date().toISOString(), vote_sources: voteString, attemptCount: (fixture.attemptCount||0)+1 }); attempted++; } } if (i+10 < queue.length) { console.log('Batch ' + (i/10+1) + ' done Waiting 80 sec PIN 317120'); await sleep(80000); } } console.log('Done PIN 317120 Mode ' + mode + ' Checked ' + queue.length + ' Found ' + found + ' Attempted ' + attempted + ' API-Football ' + apiUsed + '/100 Remaining ' + (100-apiUsed)); await postResult({ summary: true, mode: mode, checked: queue.length, found: found, attempted: attempted, apifootball_used: apiUsed, apifootball_remaining: 100-apiUsed, last_runner: new Date().toISOString() }); } main();
+const PENDING_URL = process.env.BASE44_PENDING_URL || 'https://proud-odds-pattern-pulse.base44.app/functions/getPendingFixtures?pin=317120';
+const INGEST_URL = process.env.BASE44_INGEST_URL;
+const INGEST_TOKEN = process.env.INGEST_RESULTS_TOKEN;
+const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
+const LLM_API_KEY = process.env.LLM_API_KEY;
+const PIN = '317120';
+
+function norm(f){
+  return {
+    id: f.id || f._id,
+    home: (f.home_team || f.home || '').trim(),
+    away: (f.away_team || f.away || '').trim(),
+    date: f.match_date || f.date || f.fixture_date || ''
+  };
+}
+
+async function fetchPendingAll(){
+  let all=[];
+  let offset=0;
+  const limit=400;
+  while(true){
+    const sep = PENDING_URL.includes('?') ? '&' : '?';
+    const url = `${PENDING_URL}${sep}offset=${offset}&limit=${limit}&pin=${PIN}`;
+    console.log(`Fetching pending from: ${url}`);
+    const res = await fetch(url, { headers: { 'x-pin': PIN, 'X-PIN': PIN, 'pin': PIN } });
+    const txt = await res.text();
+    console.log(`Raw preview: ${txt.slice(0,400)}`);
+    let data;
+    try{ data=JSON.parse(txt); }catch{ data=[]; }
+    let batch = Array.isArray(data) ? data : (data.pending || data.fixtures || data.data || data.matches || []);
+    if(!Array.isArray(batch) || batch.length===0) break;
+    all = all.concat(batch);
+    console.log(`Batch offset ${offset} got ${batch.length} total ${all.length}`);
+    if(batch.length < limit) break;
+    offset+=limit;
+    if(offset>=1000) break;
+  }
+  return all;
+}
+
+function getLondonMode(){
+  const h = parseInt(new Date().toLocaleString('en-GB',{timeZone:'Europe/London',hour:'numeric',hour12:false}));
+  if(h>=5 && h<8) return '6am';
+  if(h>=8 && h<10) return '9am';
+  return '11am';
+}
+
+async function getFromAPI_Football(fixture){
+  if(!API_FOOTBALL_KEY) return null;
+  try{
+    const d = new Date(fixture.date).toISOString().split('T')[0];
+    const url = `https://v3.football.api-sports.io/fixtures?date=${d}`;
+    const r = await fetch(url, { headers: { 'x-apisports-key': API_FOOTBALL_KEY } });
+    const j = await r.json();
+    if(!j.response) return null;
+    const found = j.response.find(m =>
+      (m.teams.home.name.toLowerCase().includes(fixture.home.toLowerCase()) || fixture.home.toLowerCase().includes(m.teams.home.name.toLowerCase())) &&
+      (m.teams.away.name.toLowerCase().includes(fixture.away.toLowerCase()) || fixture.away.toLowerCase().includes(m.teams.away.name.toLowerCase()))
+    );
+    if(found && found.goals.home!==null){
+      return { home: found.goals.home, away: found.goals.away, source: 'apiFootball' };
+    }
+  }catch(e){ console.log(`apiFootball error ${e.message}`); }
+  return null;
+}
+
+async function getFromESPN(fixture){
+  try{
+    const d = new Date(fixture.date).toISOString().split('T')[0].replace(/-/g,'');
+    const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=${d}`;
+    const r = await fetch(url);
+    const j = await r.json();
+    const events = j.events||[];
+    const found = events.find(ev =>
+      ev.name.toLowerCase().includes(fixture.home.toLowerCase()) && ev.name.toLowerCase().includes(fixture.away.toLowerCase())
+    );
+    if(found && found.competitions[0].status.type.completed){
+      const comp = found.competitions[0].competitors;
+      const home = comp.find(c=>c.homeAway==='home')?.score;
+      const away = comp.find(c=>c.homeAway==='away')?.score;
+      if(home!==undefined) return { home: parseInt(home), away: parseInt(away), source: 'espn' };
+    }
+  }catch(e){ console.log(`espn error ${e.message}`); }
+  return null;
+}
+
+async function getFromLLM(fixture){
+  if(!LLM_API_KEY) return null;
+  try{
+    const prompt = `What was the full time score for football match ${fixture.home} vs ${fixture.away} on ${fixture.date}? Return only JSON {"home":1,"away":2} or {"home":null} if not found.`;
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${LLM_API_KEY}`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ contents:[{ parts:[{ text: prompt }] }] })
+    });
+    const j = await r.json();
+    const txt = j.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const m = txt.match(/\{[^}]+\}/);
+    if(m){
+      const o = JSON.parse(m[0]);
+      if(o.home!==null) return { home:o.home, away:o.away, source:'llm' };
+    }
+  }catch(e){ console.log(`llm error ${e.message}`); }
+  return null;
+}
+
+async function postResult(fixture, results){
+  if(!INGEST_URL) return;
+  const payload = {
+    pin: PIN,
+    fixture_id: fixture.id,
+    home_team: fixture.home,
+    away_team: fixture.away,
+    match_date: fixture.date,
+    sources: results,
+    vote_sources: results.map(r=>r.source),
+    home_score: results[0]?.home,
+    away_score: results[0]?.away,
+    search_attempts: results.length
+  };
+  try{
+    await fetch(INGEST_URL,{
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-pin': PIN, 'Authorization': `Bearer ${INGEST_TOKEN}` },
+      body: JSON.stringify(payload)
+    });
+  }catch(e){ console.log(`ingest error ${e.message}`); }
+}
+
+async function main(){
+  const mode = getLondonMode();
+  console.log(`PIN ${PIN} Mode ${mode} - EVERYTHING without FT score - Every method ${mode==='11am'?'PLUS LLM':'EXCEPT LLM'}`);
+  const raw = await fetchPendingAll();
+  const pending = raw.map(norm).filter(f=>f.home && f.away);
+  console.log(`Pending count MAPPED: ${pending.length} isArray: true`);
+  console.log(`Queue ALL for ${mode} first: ${pending[0]?.home||'none'} vs ${pending[0]?.away||'none'} ${pending[0]?.date||''}`);
+ 
+  let checked=0, found=0, attempted=0, apiFootballUsed=0;
+ 
+  for(let i=0;i<pending.length;i+=10){
+    const batch = pending.slice(i,i+10);
+    for(const f of batch){
+      checked++;
+      let results=[];
+      const espn = await getFromESPN(f);
+      if(espn) results.push(espn);
+      const api = await getFromAPI_Football(f);
+      if(api){ results.push(api); apiFootballUsed++; }
+     
+      // Every method except LLM at 6am/9am, every method PLUS LLM at 11am
+      if(mode==='11am'){
+        const llm = await getFromLLM(f);
+        if(llm) results.push(llm);
+      }
+     
+      // Need 2 vs 0 agreement
+      if(results.length>=2){
+        const agree = results.filter(r=>r.home===results[0].home && r.away===results[0].away);
+        if(agree.length>=2){
+          await postResult(f, agree);
+          found++;
+        }
+      }
+      attempted++;
+    }
+    console.log(`Batch ${Math.floor(i/10)+1} done Waiting 80 sec - Checked ${checked} Found ${found}`);
+    if(i+10 < pending.length) await new Promise(r=>setTimeout(r,80000));
+  }
+ 
+  const summary = { pin: PIN, summary: true, mode, checked, found, attempted, apifootball_used: apiFootballUsed };
+  console.log(`Done PIN ${PIN} Mode ${mode} Checked ${checked} Found ${found} Attempted ${attempted} API-Football ${apiFootballUsed}/100 Remaining ${100-apiFootballUsed}`);
+ 
+  if(INGEST_URL){
+    await fetch(INGEST_URL,{
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-pin': PIN, 'Authorization': `Bearer ${INGEST_TOKEN}` },
+      body: JSON.stringify(summary)
+    });
+  }
+}
+
+main().catch(e=>{ console.error(e); process.exit(1); });
