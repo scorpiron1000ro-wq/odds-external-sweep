@@ -1,19 +1,11 @@
-
-// PIN 317120 - Result Sweep - NEW FILE - v4 NO BACKTICKS
-// Sources: ESPN + API-Football + Football-Data + DuckDuckGo + Bing + Gemini LLM
-// Rules: 2 vs 0 to save, EXCEPT single ESPN founds UEFA, single API-Football founds any league
-const PENDING_URL = process.env.BASE44_PENDING_URL || 'https://proud-odds-pattern-pulse.base44.app/api/functions/getPendingFixtures?pin=317120&limit=1000';
 const INGEST_URL = process.env.BASE44_INGEST_URL;
 const INGEST_TOKEN = process.env.INGEST_RESULTS_TOKEN;
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
 const FOOTBALL_DATA_KEY = process.env.FOOTBALL_DATA_KEY;
-const LLM_API_KEY = process.env.LLM_API_KEY || process.env.GEMINI_API_KEY;
-const LLM_MODEL = process.env.LLM_MODEL || 'gemini-2.5-flash';
 const PIN = '317120';
 const sleep = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
 function norm(s){ return (s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }
 function isUEFA(comp){ const c=(comp||'').toLowerCase(); return c.indexOf('champions league')>-1 || c.indexOf('europa league')>-1 || c.indexOf('conference league')>-1 || c.indexOf('youth league')>-1; }
-function parseScore(txt){ if(!txt) return null; const parts = String(txt).split('-'); if(parts.length<2) return null; const h = parseInt(parts[0]); const a = parseInt(parts[1]); if(isNaN(h)) return null; return {home:h, away:a}; }
 async function fetchPendingAll(){
 const r = await fetch(PENDING_URL);
 const j = await r.json();
@@ -30,7 +22,7 @@ return '11am';
 }
 async function getFromESPN(f){
 try{
-const leagues = ['eng.1','esp.1','ita.1','ger.1','fra.1','eng.2','eng.3','uefa.champions','uefa.europa','uefa.europa_conference','bra.1','ned.1','por.1'];
+const leagues = ['eng.1','esp.1','ita.1','ger.1','fra.1','eng.2','eng.3',' uefa.champions',' uefa.europa',' uefa.europa_conference','bra.1','ned.1','por.1'];
 for(const lg of leagues){
 const url = 'https://site.api.espn.com/apis/site/v2/sports/soccer/' + lg + '/scoreboard?dates=' + String(f.match_date).replace(/-/g,'');
 const r = await fetch(url);
@@ -90,7 +82,6 @@ const q = encodeURIComponent(f.home_team + ' vs ' + f.away_team + ' result ' + f
 const r = await fetch('https://html.duckduckgo.com/html/?q=' + q, {headers:{'User-Agent':'Mozilla/5.0'}});
 console.log('ddg[' + r.status + '] ' + f.home_team + ' vs ' + f.away_team);
 if(!r.ok) return null;
-const txt = await r.text();
 return null;
 }catch(e){ console.log('ddg[ERROR] ' + e.message); return null; }
 }
@@ -103,31 +94,15 @@ if(!r.ok) return null;
 return null;
 }catch(e){ console.log('bing[ERROR] ' + e.message); return null; }
 }
-async function getFromLLM(f){
-if(!LLM_API_KEY) return null;
-try{
-const prompt = 'What was the final score of ' + f.home_team + ' vs ' + f.away_team + ' on ' + f.match_date + ' in ' + (f.competition||'') + '? Reply ONLY like 2-1 or UNKNOWN.';
-const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + LLM_MODEL + ':generateContent?key=' + LLM_API_KEY, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
-if(!r.ok){ console.log('LLM ' + r.status); return null; }
-const j = await r.json();
-const txt = j.candidates[0].content.parts[0].text || '';
-const s = parseScore(txt);
-if(s) return {source:'LLM', home:s.home, away:s.away};
-}catch(e){ console.log('LLM error ' + e.message); }
-return null;
-}
 async function checkOne(f, mode){
 const votes = [];
 const espn = await getFromESPN(f); if(espn) votes.push(espn);
 const api = await getFromAPIFootball(f); if(api) votes.push(api);
 if(espn && isUEFA(f.competition)) return {found:true, score:espn, votes: votes, reason:'Single ESPN UEFA'};
 if(api) return {found:true, score:api, votes: votes, reason:'Single API-Football any league'};
-if(mode==='11am'){
 const fd = await getFromFootballData(f); if(fd) votes.push(fd);
 const ddg = await getFromDDG(f); if(ddg) votes.push(ddg);
 const bing = await getFromBing(f); if(bing) votes.push(bing);
-const llm = await getFromLLM(f); if(llm) votes.push(llm);
-}
 const counts = {};
 for(const v of votes){ const k = v.home + '-' + v.away; counts[k]=(counts[k]||0)+1; }
 for(const k in counts){ if(counts[k]>=2){ const parts=k.split('-'); const h=parseInt(parts[0]); const a=parseInt(parts[1]); return {found:true, score:{source:'2vs0', home:h, away:a}, votes: votes, reason:'2 vs 0'}; } }
@@ -135,10 +110,9 @@ return {found:false, votes: votes};
 }
 async function main(){
 const mode = getLondonMode();
-console.log('PIN ' + PIN + ' Mode ' + mode + ' - EVERYTHING without FT score');
+console.log('PIN ' + PIN + ' Mode ' + mode + ' - EVERYTHING without FT score - NO LLM in GitHub');
 console.log('API_FOOTBALL_KEY=' + (API_FOOTBALL_KEY?'OK':'MISSING'));
 console.log('FOOTBALL_DATA_KEY=' + (FOOTBALL_DATA_KEY?'OK':'MISSING'));
-console.log('LLM_API_KEY=' + (LLM_API_KEY?'OK':'MISSING') + ' LLM_MODEL=' + LLM_MODEL);
 console.log('Fetching pending from: ' + PENDING_URL);
 const pending = await fetchPendingAll();
 console.log('Queue ALL for ' + mode + ' first: ' + pending[0].home_team + ' vs ' + pending[0].away_team);
