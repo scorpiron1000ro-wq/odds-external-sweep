@@ -1,3 +1,4 @@
+const PENDING_URL = process.env.BASE44_PENDING_URL || 'https://proud-odds-pattern-pulse.base44.app/api/functions/getPendingFixtures?pin=317120&limit=1000';
 const INGEST_URL = process.env.BASE44_INGEST_URL;
 const INGEST_TOKEN = process.env.INGEST_RESULTS_TOKEN;
 const API_FOOTBALL_KEY = process.env.API_FOOTBALL_KEY;
@@ -98,7 +99,7 @@ async function checkOne(f, mode){
 const votes = [];
 const espn = await getFromESPN(f); if(espn) votes.push(espn);
 const api = await getFromAPIFootball(f); if(api) votes.push(api);
-if(espn && isUEFA(f.competition)) return {found:true, score:espn, votes: votes, reason:'Single ESPN UEFA'};
+if(espn && isUEFA(f.competition)) return {found:true, score: espn, votes: votes, reason:'Single ESPN UEFA'};
 if(api) return {found:true, score:api, votes: votes, reason:'Single API-Football any league'};
 const fd = await getFromFootballData(f); if(fd) votes.push(fd);
 const ddg = await getFromDDG(f); if(ddg) votes.push(ddg);
